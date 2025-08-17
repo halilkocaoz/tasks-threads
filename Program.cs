@@ -3,13 +3,23 @@ using System.Text;
 using System.Text.Json;
 
 var cancellationTokenSource = new CancellationTokenSource();
-Console.CancelKeyPress += (_, e) => { e.Cancel = true; cancellationTokenSource.Cancel(); Console.WriteLine("Cancellation requested, shutting down... Wait to finish all tasks."); };
 
 // Producer -> CPU workers.
 var inputQueue = new BlockingCollection<SensorReading>(boundedCapacity: 32768);
 
 // CPU workers -> Consumer.
 var outputQueue = new BlockingCollection<string>(boundedCapacity: 32768);
+
+Console.CancelKeyPress += (_, e) =>
+{
+    e.Cancel = true;
+    cancellationTokenSource.Cancel();
+    Console.WriteLine("");
+
+    Console.WriteLine("Cancellation requested, shutting down... Wait to finish all processing.");
+    Console.WriteLine($"InputQueue:  Count={inputQueue.Count},  IsCompleted={inputQueue.IsCompleted}");
+    Console.WriteLine($"OutputQueue: Count={outputQueue.Count}, IsCompleted={outputQueue.IsCompleted}");
+};
 
 // Start dedicated producer thread, which simulates I/O-bound work by generating sensor readings.
 // If the producer listens any network or disk I/O, it should be run on main thread, so can run as Task,
@@ -68,8 +78,6 @@ finally
     Console.WriteLine($"OutputQueue: Count={outputQueue.Count}, IsCompleted={outputQueue.IsCompleted}");
 }
 
-
-
 Console.WriteLine("We are okay, all done!");
 return 0;
 
@@ -115,24 +123,15 @@ static void CpuWorkerLoop(BlockingCollection<SensorReading> input, BlockingColle
 
     var jsonOptions = new JsonSerializerOptions { WriteIndented = false };
 
-    try
+    // Cancellation token not used here, as we want to process all items in the input queue.
+    foreach (var item in input.GetConsumingEnumerable(CancellationToken.None))
     {
-        // Cancellation token not used here, as we want to process all items in the input queue.
-        foreach (var item in input.GetConsumingEnumerable(CancellationToken.None))
-        {
-            // CPU-BOUND simplification + conversion to JSON
-            var simplified = Simplify(item);
-            var json = JsonSerializer.Serialize(simplified, jsonOptions);
+        // CPU-BOUND simplification + conversion to JSON
+        var simplified = Simplify(item);
+        var json = JsonSerializer.Serialize(simplified, jsonOptions);
 
-            if (!output.IsAddingCompleted)
-                output.Add(json, CancellationToken.None);
-        }
-    }
-    catch (OperationCanceledException)
-    {
-    }
-    catch (ObjectDisposedException)
-    {
+        if (!output.IsAddingCompleted)
+            output.Add(json, CancellationToken.None);
     }
 
     return;
@@ -167,26 +166,17 @@ static async Task ConsumerLoop(BlockingCollection<string> output)
     using var httpClient = new HttpClient();
     httpClient.Timeout = TimeSpan.FromSeconds(10);
 
-    try
+    // Cancellation token not used here, as we want to process all items in the output queue.
+    foreach (var json in output.GetConsumingEnumerable(CancellationToken.None))
     {
-        // Cancellation token not used here, as we want to process all items in the output queue.
-        foreach (var json in output.GetConsumingEnumerable(CancellationToken.None))
-        {
-            var fileName = Path.Combine(dir, $"{DateTime.UtcNow:yyyyMMdd_HHmmss_ffff}.json");
+        var fileName = Path.Combine(dir, $"{DateTime.UtcNow:yyyyMMdd_HHmmss_ffff}.json");
 
-            // Start two I/O-bound tasks
-            var write = WriteJsonToDiskAsync(fileName, json, CancellationToken.None);
-            var post = PostJsonAsync(httpClient, endpoint, json, CancellationToken.None);
+        // Start two I/O-bound tasks
+        var write = WriteJsonToDiskAsync(fileName, json, CancellationToken.None);
+        var post = PostJsonAsync(httpClient, endpoint, json, CancellationToken.None);
 
-            // Wait for both tasks to complete
-            await Task.WhenAll(write, post);
-        }
-    }
-    catch (OperationCanceledException)
-    {
-    }
-    catch (ObjectDisposedException)
-    {
+        // Wait for both tasks to complete
+        await Task.WhenAll(write, post);
     }
 }
 
