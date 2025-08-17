@@ -73,13 +73,13 @@ finally
 Console.WriteLine("We are okay, all done!");
 return 0;
 
-static void ProduceLoop(BlockingCollection<SensorReading> input, CancellationToken ct)
+static void ProduceLoop(BlockingCollection<SensorReading> input, CancellationToken cancellationToken)
 {
     Console.WriteLine($"Starting producer on thread {Environment.CurrentManagedThreadId}.");
 
     var rnd = new Random();
     var id = 0;
-    while (!ct.IsCancellationRequested)
+    while (!cancellationToken.IsCancellationRequested)
     {
         try
         {
@@ -91,10 +91,10 @@ static void ProduceLoop(BlockingCollection<SensorReading> input, CancellationTok
 
             // Add to the input queue
             if (!input.IsAddingCompleted)
-                input.Add(reading, ct);
+                input.Add(reading, cancellationToken);
 
             // Simulate some delay
-            ct.WaitHandle.WaitOne(5);
+            cancellationToken.WaitHandle.WaitOne(5);
         }
         catch (OperationCanceledException)
         {
@@ -139,13 +139,17 @@ static void CpuWorkerLoop(BlockingCollection<SensorReading> input, BlockingColle
 
     static SensorReading Simplify(SensorReading input)
     {
-        // Basic normalization and clamping
         var trimmed = new double[input.Values.Length];
         for (var i = 0; i < trimmed.Length; i++)
         {
             var v = input.Values[i];
-            if (v < -1e6) v = -1e6;
-            if (v > 1e6) v = 1e6;
+
+            if (v < -1e6)
+                v = -1e6;
+
+            if (v > 1e6)
+                v = 1e6;
+
             trimmed[i] = v / 1000.0;
         }
 
@@ -160,8 +164,8 @@ static async Task ConsumerLoop(BlockingCollection<string> output)
     Directory.CreateDirectory(dir);
 
     const string endpoint = "https://example.org/api/readings";
-    using var http = new HttpClient();
-    http.Timeout = TimeSpan.FromSeconds(10);
+    using var httpClient = new HttpClient();
+    httpClient.Timeout = TimeSpan.FromSeconds(10);
 
     try
     {
@@ -172,7 +176,7 @@ static async Task ConsumerLoop(BlockingCollection<string> output)
 
             // Start two I/O-bound tasks
             var write = WriteJsonToDiskAsync(fileName, json, CancellationToken.None);
-            var post = PostJsonAsync(http, endpoint, json, CancellationToken.None);
+            var post = PostJsonAsync(httpClient, endpoint, json, CancellationToken.None);
 
             // Wait for both tasks to complete
             await Task.WhenAll(write, post);
@@ -188,9 +192,9 @@ static async Task ConsumerLoop(BlockingCollection<string> output)
 
 static async Task WriteJsonToDiskAsync(string path, string json, CancellationToken ct)
 {
-    var bytes = Encoding.UTF8.GetBytes(json);
-    await using var fs = new FileStream(path, FileMode.Create, FileAccess.Write, FileShare.None, 8192, useAsync: true);
-    await fs.WriteAsync(bytes.AsMemory(0, bytes.Length), ct);
+    await using var fileStream = new FileStream(path, FileMode.Create, FileAccess.Write, FileShare.None, 8192, useAsync: true);
+    await using var writer = new StreamWriter(fileStream, new UTF8Encoding(false));
+    await writer.WriteAsync(json.AsMemory(), ct);
 }
 
 static async Task PostJsonAsync(HttpClient http, string url, string json, CancellationToken ct)
